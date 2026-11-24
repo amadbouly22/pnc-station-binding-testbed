@@ -1,0 +1,47 @@
+{
+  "_comment": "Network emulation profiles for tc netem, applied by scripts/60-netem-plc.sh. Values are STARTING POINTS to calibrate against published HomePlug GreenPHY / PLC measurements (see docs/measurement-plan.md section 3). The freshness check evaluation sweeps these and reports false-reject rates per profile.",
+  "profiles": {
+    "off": {
+      "description": "Remove all netem qdiscs",
+      "delay_ms": 0,
+      "jitter_ms": 0,
+      "loss_pct": 0,
+      "rate_mbit": 0
+    },
+    "plc-clean": {
+      "description": "Low-load HomePlug GreenPHY link, short cable. Order of a few ms one-way.",
+      "delay_ms": 5,
+      "jitter_ms": 2,
+      "loss_pct": 0,
+      "rate_mbit": 8
+    },
+    "plc-typical": {
+      "description": "Moderate PLC load and noise; used as the default calibration point.",
+      "delay_ms": 15,
+      "jitter_ms": 7,
+      "loss_pct": 0.1,
+      "rate_mbit": 6
+    },
+    "plc-noisy": {
+      "description": "Noisy PLC segment (crosstalk, EMI). Stress case for the freshness bound.",
+      "delay_ms": 30,
+      "jitter_ms": 15,
+      "loss_pct": 0.5,
+      "rate_mbit": 4
+    },
+    "relay-cellular": {
+      "description": "Extra leg added on the relay backchannel only (fake SECC <-> attacker EVCC exchange). Models the cellular relay hop the attack paper assumes (RTT well under 100 ms).",
+      "delay_ms": 40,
+      "jitter_ms": 15,
+      "loss_pct": 0,
+      "rate_mbit": 20
+    },
+    "relay-wifi": {
+      "description": "Best case for the attacker: local Wi-Fi relay backchannel. Smallest detectable relay delay.",
+      "delay_ms": 10,
+      "jitter_ms": 5,
+      "loss_pct": 0,
+      "rate_mbit": 50
+    }
+  }
+}
