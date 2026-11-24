@@ -1,0 +1,203 @@
+# config-honest-charger.yaml - EXPERIMENTAL EVerest "charger-only" SIL config.
+#
+# Derived from config/config-sil-ocpp201-pnc.yaml (EVerest monorepo, manual
+# 2026.10.0-rc3) by removing the car-side simulation modules (iso15118_car /
+# Ev15118, ev_manager_1 / ev_manager_2 / EvManager, ev_api / EvAPI) so that an
+# EXTERNAL ISO 15118 car stack (the PoC-modified josev attacker EVCC) can run
+# Plug&Charge against EVerest's charger (Evse15118D20) over a real interface.
+#
+# KNOWN LIMITATION (read docs/everest-patch-points.md, section "Crossing the
+# SIL boundary"): EVerest's SIL normally simulates both ends of the control
+# pilot and SLAC inside one process pair (YetiSimulator + SlacSimulator +
+# EvManager). With the car modules removed, nothing drives the CP state to
+# "plugged in", so EvseManager may never start HLC. If that happens you have
+# three options, in order of effort:
+#   1. Drive the CP state over MQTT (EvseManager's yeti_experimental / the
+#      everest_api car commands that Node-RED uses; watch topic
+#      everest_api/ev_manager/cmd and friends while pressing "Car Plugin" in
+#      an unmodified SIL run, then replay the plug-in command here).
+#   2. Keep ONE EvManager with its auto_exec plug-in commands but no 'ev'
+#      HLC module, if the module manifest accepts an empty ev connection.
+#   3. Fall back to topology A (all-josev, scripts/40-relay-attack-josev.sh),
+#      which reproduces the same attack against the same standard messages.
+#
+# This file is provided as the exact starting point for that integration work,
+# not as a verified configuration.
+
+active_modules:
+  iso15118_charger:
+    module: Evse15118D20
+    mapping:
+      module:
+        evse: 1
+    config_module:
+      device: auto
+      supported_ISO15118_2: true
+      supported_DIN70121: true
+    connections:
+      security:
+        - module_id: evse_security
+          implementation_id: main
+  evse_manager_1:
+    module: EvseManager
+    mapping:
+      module:
+        evse: 1
+    config_module:
+      enable_nodered_interface: true
+      connector_id: 1
+      evse_id: "DE*PNX*00001"
+      session_logging: true
+      session_logging_xml: false
+      session_logging_path: /tmp/everest-logs
+      ac_hlc_enabled: true
+      ac_hlc_use_5percent: false
+      ac_enforce_hlc: false
+    connections:
+      bsp:
+        - module_id: yeti_driver_1
+          implementation_id: board_support
+      powermeter_grid_side:
+        - module_id: yeti_driver_1
+          implementation_id: powermeter
+      slac:
+        - module_id: slac
+          implementation_id: evse
+      hlc:
+        - module_id: iso15118_charger
+          implementation_id: charger
+  yeti_driver_1:
+    module: YetiSimulator
+    mapping:
+      module:
+        evse: 1
+    config_module:
+      connector_id: 1
+  slac:
+    module: SlacSimulator
+  ocpp:
+    module: OCPPmulti
+    config_module:
+      Mode: Only2
+    connections:
+      evse_manager:
+        - module_id: evse_manager_1
+          implementation_id: evse
+      auth:
+        - module_id: auth
+          implementation_id: main
+      system:
+        - module_id: system
+          implementation_id: main
+      security:
+        - module_id: evse_security
+          implementation_id: main
+      evse_energy_sink:
+        - module_id: grid_connection_point
+          implementation_id: external_limits
+        - module_id: evse_manager_1_ocpp_sink
+          implementation_id: external_limits
+      reservation:
+        - module_id: auth
+          implementation_id: reservation
+      extensions_15118:
+        - module_id: iso15118_charger
+          implementation_id: extensions
+  evse_security:
+    module: EvseSecurity
+    config_module:
+      private_key_password: "123456"
+  token_provider_1:
+    module: DummyTokenProviderManual
+    config_implementation:
+      main:
+        mqtt_topic: 'everest_api/dummy_token_provider/cmd/provide'
+  auth:
+    module: Auth
+    config_module:
+      connection_timeout: 120
+      selection_algorithm: PlugEvents
+    connections:
+      token_provider:
+        - module_id: token_provider_1
+          implementation_id: main
+        - module_id: ocpp
+          implementation_id: auth_provider
+        - module_id: evse_manager_1
+          implementation_id: token_provider
+      token_validator:
+        - module_id: ocpp
+          implementation_id: auth_validator
+      evse_manager:
+        - module_id: evse_manager_1
+          implementation_id: evse
+  energy_manager:
+    module: EnergyManager
+    connections:
+      energy_trunk:
+        - module_id: grid_connection_point
+          implementation_id: energy_grid
+  evse_manager_1_ocpp_sink:
+    module: EnergyNode
+    mapping:
+      module:
+        evse: 1
+    config_module:
+      fuse_limit_A: 32.0
+      phase_count: 3
+    connections:
+      energy_consumer:
+        - module_id: evse_manager_1
+          implementation_id: energy_grid
+  evse_manager_1_api_sink:
+    module: EnergyNode
+    mapping:
+      module:
+        evse: 1
+    config_module:
+      fuse_limit_A: 32.0
+      phase_count: 3
+    connections:
+      energy_consumer:
+        - module_id: evse_manager_1_ocpp_sink
+          implementation_id: energy_grid
+      powermeter:
+        - module_id: yeti_driver_1
+          implementation_id: powermeter
+  grid_connection_point:
+    module: EnergyNode
+    mapping:
+      module:
+        evse: 0
+    config_module:
+      fuse_limit_A: 40.0
+      phase_count: 3
+    connections:
+      price_information: []
+      energy_consumer:
+        - module_id: evse_manager_1_api_sink
+          implementation_id: energy_grid
+  api:
+    module: API
+    connections:
+      evse_manager:
+        - module_id: evse_manager_1
+          implementation_id: evse
+      ocpp:
+        - module_id: ocpp
+          implementation_id: ocpp_generic
+      error_history:
+        - module_id: error_history
+          implementation_id: error_history
+      evse_energy_sink:
+        - module_id: evse_manager_1_api_sink
+          implementation_id: external_limits
+  error_history:
+    module: ErrorHistory
+    config_implementation:
+      error_history:
+        database_path: /tmp/error_history.db
+  system:
+    module: System
+
+x-module-layout: {}
