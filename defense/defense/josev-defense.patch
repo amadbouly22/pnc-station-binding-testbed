@@ -1,0 +1,277 @@
+diff --git a/iso15118/evcc/states/iso15118_2_states.py b/iso15118/evcc/states/iso15118_2_states.py
+index 56ad7e4..a7b75d2 100644
+--- a/iso15118/evcc/states/iso15118_2_states.py
++++ b/iso15118/evcc/states/iso15118_2_states.py
+@@ -12,6 +12,14 @@ from iso15118.evcc import evcc_settings
+ from iso15118.evcc.comm_session_handler import EVCCCommunicationSession
+ from iso15118.evcc.states.evcc_state import StateEVCC
+ from iso15118.shared.exceptions import DecryptionError, PrivateKeyReadError
++from iso15118.shared.defense import (
++    STATION_BINDING_ID,
++    cert_cn_der,
++    defense_enabled,
++    expected_secc_id,
++    peer_cert_der,
++    station_binding_bytes,
++)
+ from iso15118.shared.exi_codec import EXI
+ from iso15118.shared.messages.app_protocol import (
+     SupportedAppProtocolReq,
+@@ -627,14 +635,53 @@ class PaymentDetails(StateEVCC):
+             id="id1", gen_challenge=payment_details_res.gen_challenge
+         )
+ 
+-        try:
+-            signature = create_signature(
+-                [
++        elements_to_sign = [
++            (
++                authorization_req.id,
++                EXI().to_exi(authorization_req, Namespace.ISO_V2_MSG_DEF),
++            )
++        ]
++
++        if defense_enabled():
++            peer_der = peer_cert_der(self.comm_session.writer)
++
++            # Station pinning (arXiv:2404.06635, section 5.3): if the
++            # operator announced which station this car is plugged into,
++            # abort before signing anything when a different station's
++            # certificate or EVSE-ID shows up.
++            expected_station = expected_secc_id()
++            if expected_station is not None:
++                presented = {cert_cn_der(peer_der), self.comm_session.evse_id}
++                if expected_station not in presented:
++                    self.stop_state_machine(
++                        "Station pinning failed: expected station "
++                        f"'{expected_station}' but the session presents "
++                        f"CN={cert_cn_der(peer_der)!r}, "
++                        f"EVSE-ID={self.comm_session.evse_id!r}"
++                    )
++                    return
++
++            # Station binding (arXiv:2512.15966, section 5): bind the
++            # AuthorizationReq signature to the EVSE-ID and the TLS leaf
++            # certificate of the station this car is actually talking to,
++            # so a signature created behind a relay fails verification at
++            # the honest station.
++            if peer_der is not None:
++                elements_to_sign.append(
+                     (
+-                        authorization_req.id,
+-                        EXI().to_exi(authorization_req, Namespace.ISO_V2_MSG_DEF),
++                        STATION_BINDING_ID,
++                        station_binding_bytes(self.comm_session.evse_id, peer_der),
+                     )
+-                ],
++                )
++            else:
++                logger.warning(
++                    "DEFENDED mode: no TLS peer certificate available, "
++                    "skipping station binding"
++                )
++
++        try:
++            signature = create_signature(
++                elements_to_sign,
+                 load_priv_key(
+                     KeyPath.CONTRACT_LEAF_PEM,
+                     KeyEncoding.PEM,
+diff --git a/iso15118/secc/states/iso15118_2_states.py b/iso15118/secc/states/iso15118_2_states.py
+index 8a762e5..c79d784 100644
+--- a/iso15118/secc/states/iso15118_2_states.py
++++ b/iso15118/secc/states/iso15118_2_states.py
+@@ -25,6 +25,12 @@ from iso15118.shared.exceptions import (
+     EncryptionError,
+     PrivateKeyReadError,
+ )
++from iso15118.shared.defense import (
++    STATION_BINDING_ID,
++    defense_enabled,
++    freshness_bound_s,
++    station_binding_bytes,
++)
+ from iso15118.shared.exi_codec import EXI
+ from iso15118.shared.messages.app_protocol import (
+     SupportedAppProtocolReq,
+@@ -1035,6 +1041,10 @@ class PaymentDetails(StateSECC):
+                 AuthorizationStatus.ONGOING,
+             ]:
+                 self.comm_session.gen_challenge = get_random_bytes(16)
++                if defense_enabled():
++                    # Freshness reference point for the GenChallenge round
++                    # trip (defense/README.md, part 2).
++                    self.comm_session.gen_challenge_sent_at = time.monotonic()
+                 payment_details_res = PaymentDetailsRes(
+                     response_code=response_code,
+                     gen_challenge=self.comm_session.gen_challenge,
+@@ -1165,14 +1175,51 @@ class Authorization(StateSECC):
+                     )
+                     return
+ 
+-                if not verify_signature(
+-                    signature=msg.header.signature,
+-                    elements_to_sign=[
++                elements_to_sign = [
++                    (
++                        authorization_req.id,
++                        EXI().to_exi(authorization_req, Namespace.ISO_V2_MSG_DEF),
++                    )
++                ]
++
++                if defense_enabled():
++                    # Freshness (defense in depth): a GenChallenge relayed
++                    # through a second session and backchannel cannot meet
++                    # a tight bound.
++                    sent_at = getattr(
++                        self.comm_session, "gen_challenge_sent_at", None
++                    )
++                    if sent_at is not None:
++                        rtt = time.monotonic() - sent_at
++                        if rtt > freshness_bound_s():
++                            self.stop_state_machine(
++                                f"AuthorizationReq arrived {rtt:.3f} s after "
++                                "PaymentDetailsRes, above the freshness bound "
++                                f"of {freshness_bound_s():.3f} s",
++                                message,
++                                ResponseCode.FAILED_CHALLENGE_INVALID,
++                            )
++                            return
++
++                    # Station binding (arXiv:2512.15966): recompute the bound
++                    # value with this station's OWN EVSE-ID and OWN leaf
++                    # certificate. A relayed signature binds the fake
++                    # station's identity and fails verification here.
++                    elements_to_sign.append(
+                         (
+-                            authorization_req.id,
+-                            EXI().to_exi(authorization_req, Namespace.ISO_V2_MSG_DEF),
++                            STATION_BINDING_ID,
++                            station_binding_bytes(
++                                await self.comm_session.evse_controller.get_evse_id(
++                                    Protocol.ISO_15118_2
++                                ),
++                                load_cert(CertPath.SECC_LEAF_DER),
++                            ),
+                         )
+-                    ],
++                    )
++
++                if not verify_signature(
++                    signature=msg.header.signature,
++                    elements_to_sign=elements_to_sign,
+                     leaf_cert=self.comm_session.contract_cert_chain.certificate,
+                 ):
+                     self.stop_state_machine(
+diff --git a/iso15118/shared/defense.py b/iso15118/shared/defense.py
+new file mode 100644
+index 0000000..396c119
+--- /dev/null
++++ b/iso15118/shared/defense.py
+@@ -0,0 +1,106 @@
++"""
++Defense prototype helpers for the Plug & Charge relay-attack testbed.
++
++Implements the countermeasures described in the testbed's
++defense/README.md against the relay attack (arXiv:2512.15966) and the
++station-certificate reuse weakness (arXiv:2404.06635, section 5.3):
++
++1. Station binding (blocks the relay attack): the EVCC adds one extra
++   Reference to the XML-DSig SignedInfo of its AuthorizationReq whose
++   digest covers
++
++       EVSE-ID || SHA-256(SECC TLS leaf certificate, DER)
++
++   The SECC recomputes the same value with its OWN EVSE-ID and its OWN
++   leaf certificate. A signature relayed from a session with a fake
++   station binds the fake station's identity and fails verification at
++   the honest station. The binding value is not a message element; only
++   its digest enters SignedInfo, so no ISO 15118-2 schema change is
++   needed and a baseline peer ignores the extra Reference.
++
++2. Station pinning (blocks wrong-station certificates): when the
++   EXPECTED_SECC_ID environment variable is set, the EVCC aborts the
++   session before signing anything if neither the presented station
++   certificate's CN nor the session EVSE-ID matches it.
++
++3. Freshness (defense in depth): the SECC timestamps the GenChallenge
++   it sends in PaymentDetailsRes and rejects the first AuthorizationReq
++   that arrives later than FRESHNESS_BOUND_S seconds (default 2.0,
++   inside ISO 15118-2's own 2 s response timeout for this message).
++
++All behavior is off unless the DEFENDED environment variable is set, so
++one patched tree serves baseline and defended runs: scripts/80 flips the
++env var, no code changes between modes.
++"""
++import hashlib
++import logging
++import os
++from typing import Optional
++
++from cryptography.x509 import load_der_x509_certificate
++from cryptography.x509.oid import NameOID
++
++logger = logging.getLogger(__name__)
++
++# XML-DSig Reference id for the synthetic station-binding element. It is
++# not part of the V2G message body; only its digest enters SignedInfo.
++STATION_BINDING_ID = "stationBinding"
++
++_DEFAULT_FRESHNESS_BOUND_S = 2.0
++
++
++def defense_enabled() -> bool:
++    """True when the DEFENDED environment variable requests defended
++    behavior (any value other than empty/0/false/no/off)."""
++    return os.getenv("DEFENDED", "").strip().lower() not in (
++        "",
++        "0",
++        "false",
++        "no",
++        "off",
++    )
++
++
++def expected_secc_id() -> Optional[str]:
++    """The operator-announced expected station identity, or None."""
++    value = os.getenv("EXPECTED_SECC_ID", "").strip()
++    return value or None
++
++
++def freshness_bound_s() -> float:
++    """Maximum allowed PaymentDetailsRes -> AuthorizationReq round trip."""
++    try:
++        return float(os.getenv("FRESHNESS_BOUND_S", _DEFAULT_FRESHNESS_BOUND_S))
++    except ValueError:
++        return _DEFAULT_FRESHNESS_BOUND_S
++
++
++def peer_cert_der(writer) -> Optional[bytes]:
++    """DER encoding of the TLS peer's leaf certificate, or None when the
++    connection is not TLS or no certificate was presented."""
++    ssl_object = writer.get_extra_info("ssl_object")
++    if ssl_object is None:
++        return None
++    try:
++        return ssl_object.getpeercert(binary_form=True)
++    except (AttributeError, ValueError):
++        return None
++
++
++def cert_cn_der(cert_der: Optional[bytes]) -> Optional[str]:
++    """Common Name of a DER-encoded certificate, or None."""
++    if not cert_der:
++        return None
++    try:
++        cert = load_der_x509_certificate(cert_der)
++    except ValueError:
++        return None
++    attrs = cert.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
++    return attrs[0].value if attrs else None
++
++
++def station_binding_bytes(evse_id: Optional[str], secc_cert_der: bytes) -> bytes:
++    """The value both sides of a defended session digest into the
++    AuthorizationReq signature: the identity of the station the signer is
++    talking to. Both sides must construct it identically."""
++    return (evse_id or "").encode("utf-8") + hashlib.sha256(secc_cert_der).digest()
