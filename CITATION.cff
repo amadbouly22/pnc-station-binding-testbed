@@ -1,0 +1,18 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "PnC Station Binding Testbed"
+authors:
+  - family-names: Madbouly
+    given-names: Ayman Ismail
+    orcid: https://orcid.org/0000-0001-5803-7525
+    affiliation: "Department of Electrical and Computer Engineering, King Abdulaziz University, Jeddah, Saudi Arabia"
+year: 2026
+license: Apache-2.0
+url: "https://github.com/REPLACE-WITH-REPO-URL"
+version: "1.0.0"
+keywords:
+  - ISO 15118
+  - Plug and Charge
+  - relay attack
+  - electric vehicle charging
+  - station binding
