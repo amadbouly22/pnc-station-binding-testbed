@@ -1,0 +1,30 @@
+# OpenSSL config for the SECOND SECC (charging station) certificate: the
+# "compromised station" of the certificate-reuse / relay attack chain.
+#
+# The upstream PoC repo (securityinmobility/plug-and-charge-relay-poc, commit
+# 1307d45) references configs/secc2LeafCert.cnf in create_certs.sh but never
+# committed the file, so the secc2 leaf certificate is never created and the
+# fake charging station cannot do TLS. Drop this file into
+# iso15118/shared/pki/configs/ before running ./create_certs.sh -v iso-2.
+#
+# It is identical to seccLeafCert.cnf except for the commonName, which stands
+# in for a different EVSE-ID. Both certificates chain to the same CPOSubCA2 /
+# V2G root, which is exactly the condition the CCS PKI measurement study
+# (arXiv:2404.06635) describes: any charger certificate from any station is
+# accepted by any car, because the car has no expected-station input to check
+# it against.
+
+[req]
+prompt 					= no
+distinguished_name		= ca_dn
+
+[ca_dn]
+commonName				= SECCCert2
+organizationName		= Switch
+countryName				= UK
+domainComponent			= CPO
+
+[ext]
+basicConstraints		= critical,CA:false
+keyUsage				= critical,digitalSignature,keyAgreement
+subjectKeyIdentifier	= hash
