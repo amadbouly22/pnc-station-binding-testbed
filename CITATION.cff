@@ -8,7 +8,9 @@ authors:
     affiliation: "Department of Electrical and Computer Engineering, King Abdulaziz University, Jeddah, Saudi Arabia"
 year: 2026
 license: Apache-2.0
-url: "https://github.com/REPLACE-WITH-REPO-URL"
+url: "https://github.com/amadbouly22/pnc-station-binding-testbed"
+doi: 10.5281/zenodo.24517817
+date-released: 2026-11-25
 version: "1.0.0"
 keywords:
   - ISO 15118
