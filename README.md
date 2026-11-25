@@ -1,5 +1,7 @@
 # Plug & Charge defense testbed
 
+DOI: [10.5281/zenodo.24517817](https://doi.org/10.5281/zenodo.24517817) (release v1.0.0, archived on Zenodo). Repository: https://github.com/amadbouly22/pnc-station-binding-testbed
+
 A software-only experiment testbed for the paper defending ISO 15118 Plug &
 Charge against the relay attack (arXiv:2512.15966) and the PKI
 certificate-reuse weakness (arXiv:2404.06635). No lab, no car, no charger: a
